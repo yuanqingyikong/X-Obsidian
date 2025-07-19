@@ -7,12 +7,17 @@
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix --ignore-path .gitignore",
     "type-check": "vue-tsc --noEmit -p tsconfig.app.json --composite false",
     "dev": "npm run lint && vite build --watch",
-    "build": "npm run type-check && vite build",
+    "build": "vite build",
+    "build-with-check": "npm run type-check && vite build",
     "format": "prettier --write src/",
     "updateVersion": "tsx scripts/updateVersion.ts"
   },
   "keywords": [],
   "author": "Otto",
+  "dependencies": {
+    "@halo-dev/api-client": "^2.21.1",
+    "axios": "^1.6.0"
+  },
   "devDependencies": {
     "@rushstack/eslint-patch": "^1.10.1",
     "@tsconfig/node18": "^2.0.1",
@@ -32,7 +37,7 @@
     "obsidian": "latest",
     "prettier": "^2.8.8",
     "tslib": "2.4.0",
-    "typescript": "4.7.4",
+    "typescript": "5.1.6",
     "vite": "^5.2.8",
     "vue": "^3.4.21",
     "vue-tsc": "^2.0.10"

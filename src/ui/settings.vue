@@ -1,145 +1,437 @@
 <template>
-  <h2>基础 Basic</h2>
-  <!-- enable -->
-  <div class="setting-item mod-toggle">
-    <div class="setting-item-info">
-      <div class="setting-item-name">启用 Enable</div>
-      <div class="setting-item-description">
-        若关闭插件不生效<br />
-        Turn off will disable
-      </div>
-    </div>
-
-    <div class="setting-item-control">
-      <div
-        class="checkbox-container"
-        :class="settings.enable ? 'is-enabled' : ''"
-      >
-        <input type="checkbox" v-model="settings.enable" tabindex="0" />
-      </div>
-    </div>
-  </div>
-  <h2>xLog</h2>
-  <!-- username -->
+  <!-- <h2>X-Tool插件设置</h2> -->
+  <h2>笔记卡片设置</h2>
+  <!-- 图片来源 -->
   <div class="setting-item">
     <div class="setting-item-info">
-      <div class="setting-item-name">XLOG SIWE Token</div>
+      <div class="setting-item-name">封面图片来源</div>
       <div class="setting-item-description">
-        如不清楚 Token 请访问
-        <a tabindex="1" href="https://blog.ijust.cc/play-xlog-02"
-          >获取帮助 Get Help</a
-        >
+        选择笔记卡片中封面显示的图片来源
       </div>
     </div>
     <div class="setting-item-control">
-      <input
-        v-model="settings.name"
-        type="password"
-        placeholder="请输入 token"
-        spellcheck="false"
-        tabindex="2"
-      />
-      <button class="mod-cta" tabindex="3">连接测试</button>
-    </div>
-  </div>
-  <!-- charactor ID -->
-  <div class="setting-item">
-    <div class="setting-item-info">
-      <div class="setting-item-name">Charactor ID</div>
-      <!-- <div class="setting-item-description">Github Repo</div> -->
-    </div>
-    <div class="setting-item-control">
-      <select v-if="settings.name" class="dropdown" v-model="settings.name">
-        <option
-          :value="item.value"
-          v-for="item of []"
-          :key="item.value"
-          :label="item.name"
-        ></option>
+      <select v-model="settings.imageSource">
+        <option value="none">不显示图片</option>
+        <option value="local">本地附件文件夹</option>
+        <option value="api">网络图片API</option>
       </select>
-      <input
-        v-else
-        v-model="settings.name"
-        type="text"
-        placeholder="建议通过连接测试自动填写"
-        spellcheck="false"
-        tabindex="4"
-      />
     </div>
   </div>
-  <!-- need ipfs auto upload -->
-  <div class="setting-item mod-toggle">
+
+  <!-- 图片尺寸 -->
+  <div class="setting-item" v-if="settings.imageSource !== 'none'">
     <div class="setting-item-info">
-      <div class="setting-item-name">上传是否修改图片为 IPFS</div>
+      <div class="setting-item-name">封面图片尺寸</div>
       <div class="setting-item-description">
-        在 XLOG 上是否使用 IPFS 协议展示图片等资源，上传时可单独设置
+        设置笔记卡片中显示的封面图片尺寸
       </div>
     </div>
     <div class="setting-item-control">
-      <div
-        class="checkbox-container"
-        :class="settings.name ? 'is-enabled' : ''"
-      >
-        <input type="checkbox" v-model="settings.name" tabindex="5" />
+      <div class="size-inputs">
+        <div class="size-input-group">
+          <label>宽度</label>
+          <input
+            type="number"
+            v-model="settings.imageWidth"
+            placeholder="200"
+            min="50"
+            max="800"
+          />
+          <span>px</span>
+        </div>
+        <div class="size-input-group">
+          <label>高度</label>
+          <input
+            type="number"
+            v-model="settings.imageHeight"
+            placeholder="200"
+            min="50"
+            max="800"
+          />
+          <span>px</span>
+        </div>
       </div>
     </div>
   </div>
 
-  <div class="setting-item-control" style="margin-top: 18px">
-    <button @click="settings = defaultSettings()">重置配置</button>
-    <button class="mod-cta" @click="save">保存配置</button>
+  <!-- 附件文件夹路径 -->
+  <div class="setting-item" v-if="settings.imageSource === 'local'">
+    <div class="setting-item-info">
+      <div class="setting-item-name">附件文件夹路径</div>
+      <div class="setting-item-description">
+        指定包含图片的附件文件夹路径（相对于vault根目录）
+      </div>
+    </div>
+    <div class="setting-item-control">
+      <input
+        type="text"
+        v-model="settings.attachmentFolderPath"
+        placeholder="例如：attachments/images"
+      />
+    </div>
+  </div>
+
+  <!-- 封面图片来源地址 -->
+  <div class="setting-item" v-if="settings.imageSource === 'api'">
+    <div class="setting-item-info">
+      <div class="setting-item-name">封面图片来源地址</div>
+      <div class="setting-item-description">
+        输入返回随机图片的API地址
+      </div>
+    </div>
+    <div class="setting-item-control">
+      <input
+        type="text"
+        v-model="settings.imageApiUrl"
+        placeholder="例如：https://picsum.photos/200"
+      />
+    </div>
+  </div>
+
+  <h2>热力图设置</h2>
+  <!-- 活跃度阈值 -->
+  <div class="setting-item">
+    <div class="setting-item-info">
+      <div class="setting-item-name">活跃度阈值</div>
+      <div class="setting-item-description">
+        设置不同活跃度等级的阈值（修改次数）
+      </div>
+    </div>
+  </div>
+  <div class="threshold-container">
+    <div class="threshold-inputs">
+      <div class="threshold-input-group" v-for="(threshold, index) in settings.heatMapThresholds" :key="index">
+        <label>等级{{ index + 1 }}</label>
+        <input
+          type="number"
+          v-model="settings.heatMapThresholds[index]"
+          :placeholder="threshold.toString()"
+          min="0"
+        />
+        <span>次</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 活跃度颜色 -->
+  <div class="setting-item">
+    <div class="setting-item-info">
+      <div class="setting-item-name">活跃度颜色</div>
+      <div class="setting-item-description">
+        设置不同活跃度等级的颜色
+      </div>
+    </div>
+  </div>
+   <div class="threshold-container">
+      <div class="color-inputs">
+        <div class="color-input-group" v-for="(color, index) in settings.heatMapColors" :key="index">
+          <label>等级{{ index }}</label>
+          <input
+            type="color"
+            v-model="settings.heatMapColors[index]"
+          />
+        </div>
+      </div>
+    </div>
+
+  <h2>Halo 博客设置</h2>
+  
+  <!-- Halo 连接状态 -->
+  <div class="setting-item">
+    <div class="setting-item-info">
+      <div class="setting-item-name">Halo 博客连接状态</div>
+      <div class="setting-item-description">
+        {{ haloConnectionStatus }}
+      </div>
+    </div>
+    <div class="setting-item-control">
+      <button @click="openHaloConfig">配置</button>
+    </div>
+  </div>
+
+  <!-- Halo 配置概览 -->
+  <div class="setting-item" v-if="settings.haloUrl && settings.haloToken">
+    <div class="setting-item-info">
+      <div class="setting-item-name">当前配置</div>
+      <div class="setting-item-description">
+        <div class="halo-overview">
+          <div><strong>博客地址:</strong> {{ settings.haloUrl }}</div>
+          <div><strong>访问令牌:</strong> {{ maskedToken }}</div>
+          <div v-if="settings.haloDefaultCategory"><strong>默认分类:</strong> {{ settings.haloDefaultCategory }}</div>
+          <div v-if="settings.haloDefaultTags.length > 0"><strong>默认标签:</strong> {{ settings.haloDefaultTags.join(', ') }}</div>
+          <div><strong>自动发布:</strong> {{ settings.haloAutoPublish ? '是' : '否' }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="setting-item-control">
+      <button @click="testHaloConnection">测试连接</button>
+    </div>
+  </div>
+
+  <!-- 保存按钮 -->
+  <div class="setting-item">
+    <div class="setting-item-control">
+      <button class="mod-cta" @click="saveSettings">保存设置</button>
+    </div>
   </div>
 </template>
+
 <script lang="ts" setup>
-import { Notice, Plugin, requestUrl } from "obsidian";
-import { onMounted, ref } from "vue";
+import { ref, watch, computed } from 'vue';
+import type { PropType } from 'vue';
+import type MyPlugin from '../starterIndex';
 
-const props = defineProps<{
-  plugin: Plugin;
-}>();
-
-const defaultSettings = () => ({
-  name: "",
-  enable: true,
-});
-const settings = ref(defaultSettings());
-
-const save = async () => {
-  const newSeeting = {
-    // ...currentSetting.value,
-    ...settings.value,
-  };
-  await props.plugin.saveData(newSeeting);
-  new Notice("保存成功");
-};
-
-const fetchData = () => {
-  const token = "";
-  requestUrl({
-    url: "/",
-    method: "GET",
-    contentType: "application/json",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  }).then(({ json }) => {
-    return json;
-  });
-};
-// fetchData()
-
-onMounted(async () => {
-  if (props.plugin) {
-    const _currentSetting =
-      (await props.plugin.loadData()) ?? defaultSettings();
-    settings.value = _currentSetting;
+const props = defineProps({
+  plugin: {
+    type: Object as PropType<MyPlugin>,
+    required: true
   }
 });
+
+const settings = ref(props.plugin.settings);
+
+// Halo 连接状态
+const haloConnectionStatus = computed(() => {
+  if (settings.value.haloUrl && settings.value.haloToken) {
+    return `已配置 - ${settings.value.haloUrl}`;
+  }
+  return '未配置';
+});
+
+// 隐藏的访问令牌
+const maskedToken = computed(() => {
+  if (settings.value.haloToken && settings.value.haloToken.length > 10) {
+    return settings.value.haloToken.substring(0, 10) + '...';
+  }
+  return settings.value.haloToken;
+});
+
+// 打开 Halo 配置弹窗
+const openHaloConfig = () => {
+  // 通过插件实例访问 HaloConfigModal
+  const HaloConfigModal = (window as any).HaloConfigModal;
+  if (HaloConfigModal) {
+    new HaloConfigModal(props.plugin.app, props.plugin).open();
+  } else {
+    new Notice('Halo 配置功能暂时不可用');
+  }
+};
+
+// 测试 Halo 连接
+const testHaloConnection = async () => {
+  if (!settings.value.haloUrl || !settings.value.haloToken) {
+    new Notice('请先配置 Halo 地址和访问令牌');
+    return;
+  }
+
+  try {
+    const url = `${settings.value.haloUrl.replace(/\/$/, '')}/apis/content.halo.run/v1alpha1/posts?page=1&size=1`;
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${settings.value.haloToken}`
+      }
+    });
+
+    if (response.ok) {
+      new Notice('连接测试成功！');
+    } else {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+  } catch (error) {
+    console.error('连接测试失败:', error);
+    new Notice(`连接测试失败: ${error.message}`);
+  }
+};
+
+const saveSettings = async () => {
+  await props.plugin.saveSettings();
+  new Notice('设置已保存');
+};
+
+watch(
+  () => settings.value,
+  () => {
+    Object.assign(props.plugin.settings, settings.value);
+  },
+  { deep: true }
+);
 </script>
 
-<style scoped>
-input[type="checkbox"] {
+<style>
+.setting-item {
+  padding: 18px 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.setting-item:first-child {
+  border-top: none;
+}
+
+.setting-item-info {
+  margin-bottom: 12px;
+}
+
+.setting-item-name {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.setting-item-description {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.setting-item-control {
+  display: flex;
+  gap: 8px;
+}
+
+.halo-overview {
+  background-color: var(--background-secondary);
+  padding: 12px;
+  border-radius: 6px;
+  margin-top: 8px;
+}
+
+.halo-overview div {
+  margin-bottom: 6px;
+}
+
+.halo-overview div:last-child {
+  margin-bottom: 0;
+}
+
+.halo-overview strong {
+  color: var(--text-normal);
+  margin-right: 8px;
+}
+
+.setting-item-control input[type="text"],
+.setting-item-control select {
   width: 100%;
-  height: 100%;
+  border-radius: 4px;
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.setting-item-control button {
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.setting-item-control button.mod-cta {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.size-inputs {
+  display: flex;
+  gap: 16px;
+  width: 100%;
+}
+
+.size-input-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.size-input-group label {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.size-input-group input[type="number"] {
+  width: 80px;
+  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.size-input-group span {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.threshold-container {
+  padding: 12px 0;
+}
+
+.threshold-inputs {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  width: 100%;
+}
+
+.threshold-input-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.threshold-input-group label {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 30px;
+  white-space: nowrap;
+}
+
+.threshold-input-group input[type="number"] {
+  width: 40px;
+  padding: 6px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.threshold-input-group span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.color-inputs {
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+  width: 100%;
+}
+
+.color-input-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.color-input-group label {
+  font-size: 14px;
+  color: var(--text-muted);
+  min-width: 40px;
+}
+
+.color-input-group input[type="color"] {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.color-input-group input[type="text"] {
+  width: 200px;
+  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background-color: var(--background-primary);
+  color: var(--text-normal);
 }
 </style>

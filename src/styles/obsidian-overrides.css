@@ -1,0 +1,11 @@
+/* 隐藏Obsidian编辑器中的文件标题 - 仅在有banner的文档中 */
+
+/* 隐藏编辑模式中的内联标题 - 仅在有banner的文档中 */
+.workspace-leaf-content[data-type="markdown"] .markdown-source-view .inline-title {
+  display: none !important;
+}
+
+/* 隐藏预览模式中的内联标题 - 仅在有banner的文档中 */
+.workspace-leaf-content[data-type="markdown"] .markdown-preview-view .inline-title {
+  display: none !important;
+}
