@@ -214,15 +214,28 @@
       />
     </div>
   </div>
-
-        <!-- 保存按钮 -->
-        <div class="setting-item">
-          <div class="setting-item-control">
-            <button class="mod-cta" @click="saveSettings">保存设置</button>
-          </div>
-        </div>
+  <h2>图片上传设置</h2>
+  
+  <!-- 又拍云配置 -->
+  <div class="setting-item">
+    <div class="setting-item-info">
+      <div class="setting-item-name">又拍云存储</div>
+      <div class="setting-item-description">
+        配置又拍云存储用于上传图片
       </div>
-
+    </div>
+    <div class="setting-item-control">
+      <button @click="openUpyunConfig">配置</button>
+    </div>
+  </div>
+  
+  <!-- 保存按钮 -->
+  <div class="setting-item">
+    <div class="setting-item-control">
+      <button class="mod-cta" @click="saveSettings">保存设置</button>
+    </div>
+  </div>
+</div>
       <!-- 历史记录页面 -->
       <div v-show="activeTab === 'history'">
         <HistoryTab :plugin="plugin" />
@@ -271,6 +284,33 @@ const openHaloConfig = () => {
     new HaloConfigModal(props.plugin.app, props.plugin).open();
   } else {
     new Notice('Halo 配置功能暂时不可用');
+  }
+};
+
+const openUpyunConfig = () => {
+  const UpyunConfigModal = (window as any).UpyunConfigModal;
+  if (UpyunConfigModal) {
+    const modal = new UpyunConfigModal(props.plugin.app, props.plugin);
+    // 在Vue 3中，我们通过props和emit来处理事件
+    // 设置将在upyun-config-modal组件中通过emit更新
+    modal.open();
+  } else {
+    new Notice('又拍云配置功能暂时不可用');
+  }
+};
+
+const testUpyunConnection = async () => {
+  if (!settings.value.upyunBucket || !settings.value.upyunOperator || !settings.value.upyunPassword) {
+    new Notice('请先完成又拍云配置');
+    return;
+  }
+
+  try {
+    await props.plugin.testUpyunConnection();
+    new Notice('又拍云连接测试成功！');
+  } catch (error) {
+    console.error('又拍云连接测试失败:', error);
+    new Notice(`又拍云连接测试失败: ${error.message}`);
   }
 };
 
@@ -357,13 +397,22 @@ watch(
   margin-bottom: 6px;
 }
 
-.halo-overview div:last-child {
+.halo-overview div:last-child,
+.upyun-overview div:last-child {
   margin-bottom: 0;
 }
 
-.halo-overview strong {
-  color: var(--text-normal);
+.halo-overview strong,
+.upyun-overview strong {
+  color: var(--text-accent);
   margin-right: 8px;
+}
+
+.upyun-overview {
+  background-color: var(--background-secondary);
+  padding: 10px;
+  border-radius: 4px;
+  margin-top: 8px;
 }
 
 .setting-item-control input[type="text"],

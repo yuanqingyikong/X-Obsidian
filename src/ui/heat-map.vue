@@ -151,7 +151,7 @@ const displayMonths = computed<MonthLabel[]>(() => {
 
   // 为每个月份创建标签
   cellsByMonth.forEach((cells, monthKey) => {
-    const [year, month] = monthKey.split('-').map(Number);
+    const [, month] = monthKey.split('-').map(Number);
     const minColumn = Math.min(...cells.map(cell => cell.column));
     const maxColumn = Math.max(...cells.map(cell => cell.column));
     

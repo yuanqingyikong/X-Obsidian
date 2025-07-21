@@ -138,8 +138,8 @@
   </div>
 </template>
 <script lang="ts" setup>
-import { computed, nextTick, onMounted, reactive, ref, watchEffect } from "vue";
-import { Notice, Modal, TFile, requestUrl, Plugin } from "obsidian";
+import { onMounted, ref } from "vue";
+import { Modal, TFile, Plugin } from "obsidian";
 
 const props = defineProps<{
   plugin: Plugin;
@@ -149,9 +149,6 @@ const props = defineProps<{
 
 const defaultConfig = () => ({});
 
-const defaultSettings = () => ({
-  enable: true,
-});
 const config = ref(defaultConfig());
 
 const isLoading = ref(false);
@@ -160,12 +157,9 @@ const closeModal = () => {
   props.modal.close();
 };
 
-// 系统设置
-let settings: Partial<ReturnType<typeof defaultSettings>> = {};
-
 onMounted(async () => {
   // 读取配置
-  settings = await props.plugin.loadData();
+  await props.plugin.loadData();
 });
 </script>
 

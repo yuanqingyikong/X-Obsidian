@@ -16,7 +16,7 @@ dotenvExpand.expand(env);
 
 const isWatch = process.argv.includes("--watch");
 
-export default defineConfig(({ command }) => {
+export default defineConfig(() => {
   return {
     plugins: [
       vue(),

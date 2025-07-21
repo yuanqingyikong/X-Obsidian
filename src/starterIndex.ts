@@ -1,14 +1,13 @@
-import { App, Modal, Plugin, PluginSettingTab, TFile, TFolder, MarkdownView, MarkdownPostProcessorContext, Notice, Setting } from "obsidian";
+import { App, Modal, Plugin, PluginSettingTab, Setting, TFile, Notice } from "obsidian";
 import { createApp, type App as VueApp } from "vue";
 import SettingsPage from "./ui/settings.vue";
-import ModalPage from "./ui/modal.vue";
+
 import NoteCards from "./ui/note-cards.vue";
 import HeatMap from "./ui/heat-map.vue";
 import Banners from "./ui/banners.vue";
 import { NoteCardsProcessor } from "./processors/noteCardsProcessor";
 import { createCoreApiClient, createConsoleApiClient } from '@halo-dev/api-client';
 import axios from 'axios';
-import type { AxiosInstance, AxiosError } from 'axios';
 import { marked } from 'marked';
 import "./styles/obsidian-overrides.css";
 import * as path from 'path';
@@ -53,12 +52,6 @@ interface HaloContent {
   rawType: 'markdown' | 'html' | 'RICHTEXT';
 }
 
-interface ApiResponse<T = any> {
-  success: boolean;
-  data?: T;
-  error?: string;
-}
-
 // 为了向后兼容，保留原有的返回类型
 type HaloApiResponse = { success: boolean; data?: any; error?: string };
 
@@ -80,6 +73,11 @@ interface MyPluginSettings {
   // 热力图设置
   heatMapThresholds: number[];
   heatMapColors: string[];
+  // 又拍云设置
+  upyunBucket: string;
+  upyunOperator: string;
+  upyunPassword: string;
+  upyunDomain: string;
   // Halo博客设置
   haloUrl: string;
   haloToken: string;
@@ -91,11 +89,6 @@ interface MyPluginSettings {
   // 文章归档设置
   enableArchive: boolean;
   archiveFolderPath: string;
-  // 又拍云设置
-  upyunBucket: string;
-  upyunOperator: string;
-  upyunPassword: string;
-  upyunDomain: string;
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
@@ -113,6 +106,11 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
     '#30a14e', // level-3
     '#216e39'  // level-4
   ],
+  // 又拍云默认设置
+  upyunBucket: '',
+  upyunOperator: '',
+  upyunPassword: '',
+  upyunDomain: '',
   // Halo博客默认设置
   haloUrl: '',
   haloToken: '',
@@ -122,12 +120,7 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
   publishHistory: [],
   // 文章归档设置
   enableArchive: false,
-  archiveFolderPath: 'Archives',
-  // 又拍云默认设置
-  upyunBucket: '',
-  upyunOperator: '',
-  upyunPassword: '',
-  upyunDomain: ''
+  archiveFolderPath: 'Archives'
 };
 
 export default class MyPlugin extends Plugin {
@@ -163,8 +156,9 @@ export default class MyPlugin extends Plugin {
     this.statusBarItemEl = this.addStatusBarItem();
     this.updateStatusBar('Ready');
     
-    // 将 HaloConfigModal 暴露到全局对象，供 Vue 组件使用
+    // 将配置弹窗暴露到全局对象，供 Vue 组件使用
     (window as any).HaloConfigModal = HaloConfigModal;
+    (window as any).UpyunConfigModal = UpyunConfigModal;
     
     this.addSettingTab(new SampleSettingTab(this.app, this));
     this.processor = new NoteCardsProcessor(this.app, this.settings);
@@ -328,67 +322,7 @@ export default class MyPlugin extends Plugin {
     }
   }
 
- // 上传图片到又拍云
-  private async uploadToUpyun(filePath: string): Promise<string> {
-    try {
-      const { upyunBucket, upyunOperator, upyunPassword, upyunDomain } = this.settings;
 
-      if (!upyunBucket || !upyunOperator || !upyunPassword || !upyunDomain) {
-        throw new Error('又拍云配置不完整');
-      }
-
-      // 读取图片文件
-      const imageBuffer = await this.app.vault.adapter.readBinary(filePath);
-      
-      // 生成唯一的文件名
-      const ext = path.extname(filePath);
-      const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}${ext}`;
-      
-      // 构建上传路径
-      const uploadPath = `/obsidian-images/${fileName}`;
-      
-      // 计算认证签名
-      const gmtDate = new Date().toUTCString();
-      const method = 'PUT';
-      const contentMd5 = crypto.createHash('md5').update(imageBuffer).digest('hex');
-      const contentType = mime.getType(ext) || 'application/octet-stream';
-      
-      // 构建签名字符串
-      const signStr = [method, uploadPath, gmtDate, contentMd5, contentType]
-        .join('&');
-      
-      // 使用操作员密码对签名字符串进行 MD5 加密
-      const signature = crypto
-        .createHmac('sha1', upyunPassword)
-        .update(signStr)
-        .digest('base64');
-      
-      // 构建认证头
-      const authorization = `UPYUN ${upyunOperator}:${signature}`;
-      
-      // 发送上传请求
-      const response = await fetch(`http://v0.api.upyun.com/${upyunBucket}${uploadPath}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': authorization,
-          'Date': gmtDate,
-          'Content-Type': contentType,
-          'Content-Length': imageBuffer.byteLength.toString(),
-        },
-        body: imageBuffer,
-      });
-      
-      if (!response.ok) {
-        throw new Error(`上传失败: ${response.statusText}`);
-      }
-      
-      // 返回图片访问URL
-      return `${upyunDomain}${uploadPath}`;
-    } catch (error) {
-      this.logger.error('上传图片到又拍云失败:', error);
-      throw error;
-    }
-  }
 
   // 上传图片到云存储并替换链接
   private async uploadAndReplaceImages(content: string): Promise<string> {
@@ -428,9 +362,20 @@ export default class MyPlugin extends Plugin {
 
           // 上传图片到又拍云
           try {
-            const uploadedUrl = await this.uploadToUpyun(absolutePath);
-            modifiedContent = modifiedContent.replace(fullMatch, `![${altText}](${uploadedUrl})`);
-            this.logger.info(`图片上传成功: ${uploadedUrl}`);
+            // 读取图片文件
+            const imageBuffer = await this.app.vault.adapter.readBinary(absolutePath);
+            // 生成唯一的文件名
+            const ext = path.extname(absolutePath);
+            const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}${ext}`;
+            // 构建上传路径
+            const uploadPath = `/obsidian-images/${fileName}`;
+            const uploadedUrl = await this.uploadToUpyun(imageBuffer, uploadPath);
+            if (typeof uploadedUrl === 'string') {
+              modifiedContent = modifiedContent.replace(fullMatch, `![${altText}](${uploadedUrl})`);
+              this.logger.info(`图片上传成功: ${uploadedUrl}`);
+            } else {
+              throw new Error('上传失败');
+            }
           } catch (error) {
             this.logger.error(`图片上传失败: ${absolutePath}`, error);
             new Notice(`图片上传失败: ${path.basename(absolutePath)}`);
@@ -1261,6 +1206,118 @@ export default class MyPlugin extends Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
   }
 
+  async testUpyunConnection(testSettings?: Partial<MyPluginSettings>): Promise<boolean> {
+    try {
+      const settings = testSettings || this.settings;
+      const { upyunBucket, upyunOperator, upyunPassword, upyunDomain } = settings;
+      if (!upyunBucket || !upyunOperator || !upyunPassword || !upyunDomain) {
+        new Notice('请先完成又拍云配置');
+        return false;
+      }
+
+      // 创建测试文件内容
+      const testContent = 'Obsidian Plugin Test';
+      const testPath = '/obsidian-test.txt';
+
+      // 上传测试文件
+      const uploadResult = await this.uploadToUpyun(testContent, testPath, settings);
+      if (!uploadResult) {
+        throw new Error('上传测试文件失败');
+      }
+
+      // 删除测试文件
+      const deleteResult = await this.deleteFromUpyun(testPath, settings);
+      if (!deleteResult) {
+        throw new Error('删除测试文件失败');
+      }
+
+      new Notice('又拍云连接测试成功');
+      return true;
+    } catch (error) {
+      console.error('又拍云连接测试失败:', error);
+      new Notice(`又拍云连接测试失败: ${error.message}`);
+      return false;
+    }
+  }
+
+  async uploadToUpyun(content: string | Buffer, path: string, testSettings?: Partial<MyPluginSettings>): Promise<string | boolean> {
+    try {
+      const settings = testSettings || this.settings;
+      const { upyunBucket, upyunOperator, upyunPassword, upyunDomain } = settings;
+      const date = new Date().toUTCString();
+      const method = 'PUT';
+      const uri = `/${upyunBucket}${path}`;
+      
+      let uploadContent: Buffer;
+      let contentType: string;
+      
+      if (Buffer.isBuffer(content)) {
+        uploadContent = content;
+        const ext = path.substring(path.lastIndexOf('.'));
+        contentType = mime.getType(ext) || 'application/octet-stream';
+      } else {
+        uploadContent = Buffer.from(content);
+        contentType = 'text/plain';
+      }
+      
+      const contentMd5 = crypto.createHash('md5').update(uploadContent).digest('hex');
+      const signStr = [method, uri, date, contentMd5, contentType].join('&');
+      crypto.createHash('md5').update(upyunPassword).digest('hex');
+      const sign = crypto.createHash('md5').update(signStr).digest('hex');
+      const authorization = `UPYUN ${upyunOperator}:${sign}`;
+
+      const response = await fetch(`https://v0.api.upyun.com${uri}`, {
+        method,
+        headers: {
+          'Content-Type': contentType,
+          'Content-MD5': contentMd5,
+          'Date': date,
+          'Authorization': authorization,
+          'Content-Length': uploadContent.length.toString()
+        },
+        body: uploadContent
+      });
+
+      if (!response.ok) {
+        throw new Error(`上传失败: ${response.statusText}`);
+      }
+      
+      return typeof content === 'string' ? response.ok : `${upyunDomain}${uri}`;
+    } catch (error) {
+      this.logger.error('上传到又拍云失败:', error);
+      if (typeof content === 'string') {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async deleteFromUpyun(path: string, testSettings?: Partial<MyPluginSettings>): Promise<boolean> {
+    try {
+      const settings = testSettings || this.settings;
+      const { upyunBucket, upyunOperator, upyunPassword } = settings;
+      const date = new Date().toUTCString();
+      const method = 'DELETE';
+      const uri = `/${upyunBucket}${path}`;
+      const passwordMd5 = crypto.createHash('md5').update(upyunPassword).digest('hex');
+      const sign = crypto.createHash('md5').update(`${method}&${uri}&${date}&${passwordMd5}`).digest('hex');
+      const authorization = `UPYUN ${upyunOperator}:${sign}`;
+
+      const response = await fetch(`https://v0.api.upyun.com${uri}`, {
+        method,
+        headers: {
+          'Date': date,
+          'Authorization': authorization
+        }
+      });
+
+      return response.ok;
+    } catch (error) {
+      console.error('从又拍云删除失败:', error);
+      return false;
+    }
+  }
+
   async saveSettings() {
      await this.saveData(this.settings);
      // 重新初始化API客户端
@@ -1305,25 +1362,7 @@ class SampleSettingTab extends PluginSettingTab {
   }
 }
 
-class SampleModal extends Modal {
-  plugin: Plugin;
-  file: TFile;
 
-  constructor(app: App, plugin: Plugin, file: TFile) {
-    super(app);
-    this.plugin = plugin;
-    this.file = file;
-  }
-
-  onOpen() {
-    const _app = createApp(ModalPage, {
-      plugin: this.plugin,
-      modal: this,
-      file: this.file,
-    });
-    _app.mount(this.containerEl);
-  }
-}
 
 class BannerModal extends Modal {
   plugin: MyPlugin;
@@ -1376,6 +1415,50 @@ class BannerModal extends Modal {
   }
 }
 
+import UpyunConfigModalComponent from './ui/upyun-config-modal.vue';
+
+export class UpyunConfigModal extends Modal {
+  plugin: MyPlugin;
+  private vueApp: VueApp | null = null;
+
+  constructor(app: App, plugin: MyPlugin) {
+    super(app);
+    this.plugin = plugin;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    
+    // 设置弹窗尺寸
+    contentEl.style.width = '520px';
+    contentEl.style.height = '700px';
+    contentEl.style.maxHeight = '80vh';
+    contentEl.style.overflow = 'hidden';
+    
+    this.vueApp = createApp(UpyunConfigModalComponent, {
+      plugin: this.plugin,
+      onSettingsUpdate: (newSettings: any) => {
+        Object.assign(this.plugin.settings, newSettings);
+        this.plugin.saveSettings();
+      },
+      onClose: () => {
+        this.close();
+      }
+    });
+    this.vueApp.mount(contentEl);
+  }
+
+  onClose() {
+    if (this.vueApp) {
+      this.vueApp.unmount();
+      this.vueApp = null;
+    }
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+}
+
 export class HaloConfigModal extends Modal {
   plugin: MyPlugin;
   private tempSettings: {
@@ -1384,10 +1467,6 @@ export class HaloConfigModal extends Modal {
     haloDefaultCategory: string;
     haloDefaultTags: string;
     haloAutoPublish: boolean;
-    upyunBucket: string;
-    upyunOperator: string;
-    upyunPassword: string;
-    upyunDomain: string;
   };
 
   constructor(app: App, plugin: MyPlugin) {
@@ -1398,11 +1477,7 @@ export class HaloConfigModal extends Modal {
       haloToken: plugin.settings.haloToken,
       haloDefaultCategory: plugin.settings.haloDefaultCategory,
       haloDefaultTags: plugin.settings.haloDefaultTags.join(', '),
-      haloAutoPublish: plugin.settings.haloAutoPublish,
-      upyunBucket: plugin.settings.upyunBucket,
-      upyunOperator: plugin.settings.upyunOperator,
-      upyunPassword: plugin.settings.upyunPassword,
-      upyunDomain: plugin.settings.upyunDomain
+      haloAutoPublish: plugin.settings.haloAutoPublish
     };
   }
 
@@ -1470,56 +1545,7 @@ export class HaloConfigModal extends Modal {
           this.tempSettings.haloAutoPublish = value;
         }));
 
-    // 又拍云配置分隔线
-    contentEl.createEl('h2', { text: '又拍云配置' });
-    contentEl.createEl('p', { 
-      text: '配置又拍云存储信息，用于上传文章中的图片。如果不需要，可以留空。',
-      cls: 'setting-item-description'
-    });
 
-    // 又拍云存储空间
-    new Setting(contentEl)
-      .setName('存储空间名称')
-      .setDesc('又拍云存储空间的名称')
-      .addText(text => text
-        .setPlaceholder('your-bucket')
-        .setValue(this.tempSettings.upyunBucket)
-        .onChange(async (value) => {
-          this.tempSettings.upyunBucket = value.trim();
-        }));
-
-    // 操作员名称
-    new Setting(contentEl)
-      .setName('操作员名称')
-      .setDesc('有权限操作该存储空间的操作员名称')
-      .addText(text => text
-        .setPlaceholder('operator')
-        .setValue(this.tempSettings.upyunOperator)
-        .onChange(async (value) => {
-          this.tempSettings.upyunOperator = value.trim();
-        }));
-
-    // 操作员密码
-    new Setting(contentEl)
-      .setName('操作员密码')
-      .setDesc('操作员的密码')
-      .addText(text => text
-        .setPlaceholder('password')
-        .setValue(this.tempSettings.upyunPassword)
-        .onChange(async (value) => {
-          this.tempSettings.upyunPassword = value.trim();
-        }));
-
-    // 加速域名
-    new Setting(contentEl)
-      .setName('加速域名')
-      .setDesc('存储空间绑定的域名，以 http:// 或 https:// 开头')
-      .addText(text => text
-        .setPlaceholder('https://your-domain.com')
-        .setValue(this.tempSettings.upyunDomain)
-        .onChange(async (value) => {
-          this.tempSettings.upyunDomain = value.trim();
-        }));
 
     // 按钮区域
     const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
@@ -1532,12 +1558,6 @@ export class HaloConfigModal extends Modal {
     const testButton = buttonContainer.createEl('button', { text: '测试 Halo 连接' });
     testButton.onclick = async () => {
       await this.testConnection();
-    };
-
-    // 测试又拍云按钮
-    const testUpyunButton = buttonContainer.createEl('button', { text: '测试又拍云' });
-    testUpyunButton.onclick = async () => {
-      await this.testUpyunConnection();
     };
 
     // 取消按钮
@@ -1553,64 +1573,7 @@ export class HaloConfigModal extends Modal {
     };
   }
 
-  async testUpyunConnection() {
-    if (!this.tempSettings.upyunBucket || !this.tempSettings.upyunOperator || 
-        !this.tempSettings.upyunPassword || !this.tempSettings.upyunDomain) {
-      new Notice('请先填写完整的又拍云配置');
-      return;
-    }
 
-    try {
-      // 创建一个1x1的透明像素作为测试图片
-      const testImageBuffer = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
-      
-      // 生成测试文件名
-      const testFileName = `test-${Date.now()}.gif`;
-      const uploadPath = `/obsidian-images/${testFileName}`;
-      
-      // 计算签名
-      const gmtDate = new Date().toUTCString();
-      const method = 'PUT';
-      const contentMd5 = crypto.createHash('md5').update(testImageBuffer).digest('hex');
-      const contentType = 'image/gif';
-      
-      // 构建签名字符串
-      const signStr = [method, uploadPath, gmtDate, contentMd5, contentType].join('&');
-      const signature = crypto
-        .createHmac('sha1', this.tempSettings.upyunPassword)
-        .update(signStr)
-        .digest('base64');
-      
-      // 发送测试请求
-      const response = await fetch(`http://v0.api.upyun.com/${this.tempSettings.upyunBucket}${uploadPath}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `UPYUN ${this.tempSettings.upyunOperator}:${signature}`,
-          'Date': gmtDate,
-          'Content-Type': contentType,
-          'Content-MD5': contentMd5,
-          'Content-Length': testImageBuffer.length.toString(),
-        },
-        body: testImageBuffer,
-      });
-
-      if (response.ok) {
-        // 上传成功后尝试访问图片
-        const imageUrl = `${this.tempSettings.upyunDomain}${uploadPath}`;
-        const checkResponse = await fetch(imageUrl);
-        if (checkResponse.ok) {
-          new Notice('又拍云配置测试成功！');
-        } else {
-          throw new Error('图片访问失败，请检查加速域名配置');
-        }
-      } else {
-        throw new Error(`上传失败: ${response.statusText}`);
-      }
-    } catch (error) {
-      console.error('又拍云测试失败:', error);
-      new Notice(`又拍云测试失败: ${error.message}`);
-    }
-  }
 
   async testConnection() {
     if (!this.tempSettings.haloUrl || !this.tempSettings.haloToken) {
@@ -1656,20 +1619,8 @@ export class HaloConfigModal extends Modal {
       .filter(tag => tag.length > 0);
     this.plugin.settings.haloAutoPublish = this.tempSettings.haloAutoPublish;
 
-    // 保存又拍云设置
-    this.plugin.settings.upyunBucket = this.tempSettings.upyunBucket;
-    this.plugin.settings.upyunOperator = this.tempSettings.upyunOperator;
-    this.plugin.settings.upyunPassword = this.tempSettings.upyunPassword;
-    this.plugin.settings.upyunDomain = this.tempSettings.upyunDomain;
-
-    // 验证又拍云配置的完整性
-    const hasUpyunConfig = !!(this.tempSettings.upyunBucket && 
-      this.tempSettings.upyunOperator && 
-      this.tempSettings.upyunPassword && 
-      this.tempSettings.upyunDomain);
-
     await this.plugin.saveSettings();
-    new Notice(`配置已保存${hasUpyunConfig ? '，又拍云图床已启用' : ''}`); 
+    new Notice('Halo 博客配置已保存'); 
     this.close();
   }
 
