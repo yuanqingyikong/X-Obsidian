@@ -1,4 +1,4 @@
-import { App, Modal, Plugin, PluginSettingTab, TFile, MarkdownView, MarkdownPostProcessorContext, Notice, Setting } from "obsidian";
+import { App, Modal, Plugin, PluginSettingTab, TFile, TFolder, MarkdownView, MarkdownPostProcessorContext, Notice, Setting } from "obsidian";
 import { createApp, type App as VueApp } from "vue";
 import SettingsPage from "./ui/settings.vue";
 import ModalPage from "./ui/modal.vue";
@@ -9,7 +9,11 @@ import { NoteCardsProcessor } from "./processors/noteCardsProcessor";
 import { createCoreApiClient, createConsoleApiClient } from '@halo-dev/api-client';
 import axios from 'axios';
 import type { AxiosInstance, AxiosError } from 'axios';
+import { marked } from 'marked';
 import "./styles/obsidian-overrides.css";
+import * as path from 'path';
+import * as crypto from 'crypto';
+import mime from 'mime';
 
 // Halo API 相关类型定义
 interface HaloPost {
@@ -18,6 +22,9 @@ interface HaloPost {
   metadata: {
     generateName?: string;
     name?: string;
+    annotations?: {
+      [key: string]: string;
+    };
   };
   spec: {
     title: string;
@@ -52,12 +59,16 @@ interface ApiResponse<T = any> {
   error?: string;
 }
 
+// 为了向后兼容，保留原有的返回类型
+type HaloApiResponse = { success: boolean; data?: any; error?: string };
+
 interface PublishHistory {
   fileName: string;
   postName: string;
   publishTime: string;
   success: boolean;
   error?: string;
+  isUpdate?: boolean;
 }
 
 interface MyPluginSettings {
@@ -77,6 +88,14 @@ interface MyPluginSettings {
   haloAutoPublish: boolean;
   // 发布历史
   publishHistory: PublishHistory[];
+  // 文章归档设置
+  enableArchive: boolean;
+  archiveFolderPath: string;
+  // 又拍云设置
+  upyunBucket: string;
+  upyunOperator: string;
+  upyunPassword: string;
+  upyunDomain: string;
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
@@ -100,7 +119,15 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
   haloDefaultCategory: '',
   haloDefaultTags: [],
   haloAutoPublish: false,
-  publishHistory: []
+  publishHistory: [],
+  // 文章归档设置
+  enableArchive: false,
+  archiveFolderPath: 'Archives',
+  // 又拍云默认设置
+  upyunBucket: '',
+  upyunOperator: '',
+  upyunPassword: '',
+  upyunDomain: ''
 };
 
 export default class MyPlugin extends Plugin {
@@ -301,7 +328,126 @@ export default class MyPlugin extends Plugin {
     }
   }
 
-  async publishToHalo(file: TFile, forcePublish: boolean = false) {
+ // 上传图片到又拍云
+  private async uploadToUpyun(filePath: string): Promise<string> {
+    try {
+      const { upyunBucket, upyunOperator, upyunPassword, upyunDomain } = this.settings;
+
+      if (!upyunBucket || !upyunOperator || !upyunPassword || !upyunDomain) {
+        throw new Error('又拍云配置不完整');
+      }
+
+      // 读取图片文件
+      const imageBuffer = await this.app.vault.adapter.readBinary(filePath);
+      
+      // 生成唯一的文件名
+      const ext = path.extname(filePath);
+      const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}${ext}`;
+      
+      // 构建上传路径
+      const uploadPath = `/obsidian-images/${fileName}`;
+      
+      // 计算认证签名
+      const gmtDate = new Date().toUTCString();
+      const method = 'PUT';
+      const contentMd5 = crypto.createHash('md5').update(imageBuffer).digest('hex');
+      const contentType = mime.getType(ext) || 'application/octet-stream';
+      
+      // 构建签名字符串
+      const signStr = [method, uploadPath, gmtDate, contentMd5, contentType]
+        .join('&');
+      
+      // 使用操作员密码对签名字符串进行 MD5 加密
+      const signature = crypto
+        .createHmac('sha1', upyunPassword)
+        .update(signStr)
+        .digest('base64');
+      
+      // 构建认证头
+      const authorization = `UPYUN ${upyunOperator}:${signature}`;
+      
+      // 发送上传请求
+      const response = await fetch(`http://v0.api.upyun.com/${upyunBucket}${uploadPath}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': authorization,
+          'Date': gmtDate,
+          'Content-Type': contentType,
+          'Content-Length': imageBuffer.byteLength.toString(),
+        },
+        body: imageBuffer,
+      });
+      
+      if (!response.ok) {
+        throw new Error(`上传失败: ${response.statusText}`);
+      }
+      
+      // 返回图片访问URL
+      return `${upyunDomain}${uploadPath}`;
+    } catch (error) {
+      this.logger.error('上传图片到又拍云失败:', error);
+      throw error;
+    }
+  }
+
+  // 上传图片到云存储并替换链接
+  private async uploadAndReplaceImages(content: string): Promise<string> {
+    try {
+      // 匹配本地图片链接，支持相对路径和绝对路径
+      const imageRegex = /!\[([^\]]*)]\(([^)]+)\)/g;
+      let modifiedContent = content;
+      let match;
+
+      while ((match = imageRegex.exec(content)) !== null) {
+        const [fullMatch, altText, imagePath] = match;
+        
+        // 跳过已经是网络图片的链接
+        if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+          continue;
+        }
+
+        try {
+          // 获取图片的完整路径
+          const absolutePath = imagePath.startsWith('/') 
+            ? imagePath 
+            : normalizePath(path.join(this.app.vault.adapter.getBasePath(), imagePath));
+
+          // 检查文件是否存在
+          const imageFile = await this.app.vault.adapter.exists(absolutePath);
+          if (!imageFile) {
+            this.logger.warn(`图片文件不存在: ${absolutePath}`);
+            continue;
+          }
+
+          // 检查是否配置了又拍云
+          if (!this.settings.upyunBucket || !this.settings.upyunOperator || 
+              !this.settings.upyunPassword || !this.settings.upyunDomain) {
+            this.logger.warn('未配置又拍云，跳过图片上传');
+            continue;
+          }
+
+          // 上传图片到又拍云
+          try {
+            const uploadedUrl = await this.uploadToUpyun(absolutePath);
+            modifiedContent = modifiedContent.replace(fullMatch, `![${altText}](${uploadedUrl})`);
+            this.logger.info(`图片上传成功: ${uploadedUrl}`);
+          } catch (error) {
+            this.logger.error(`图片上传失败: ${absolutePath}`, error);
+            new Notice(`图片上传失败: ${path.basename(absolutePath)}`);
+          }
+        } catch (error) {
+          this.logger.error(`处理图片失败: ${imagePath}`, error);
+        }
+      }
+
+      return modifiedContent;
+    } catch (error) {
+      this.logger.error('处理图片时发生错误:', error);
+      return content; // 发生错误时返回原始内容
+    }
+  }
+
+  private async publishToHalo(file: TFile, forcePublish: boolean = false) {
     // 验证Halo配置
     const configValidation = this.validateHaloConfig();
     if (!configValidation.valid) {
@@ -312,7 +458,10 @@ export default class MyPlugin extends Plugin {
 
     try {
       // 读取文件内容
-      const content = await this.app.vault.read(file);
+      let content = await this.app.vault.read(file);
+      
+      // 处理文章中的本地图片
+      content = await this.uploadAndReplaceImages(content);
       
       // 检查是否需要重新发布（除非强制发布）
       if (!forcePublish && !this.shouldRepublish(file, content)) {
@@ -337,103 +486,111 @@ export default class MyPlugin extends Plugin {
         notice = new Notice('正在发布到 Halo 博客...', 0);
         
         const { frontmatter, content: markdownContent } = this.parseFrontmatter(content);
+        
+        // 检查是否为更新操作
+        // 检查是否已经发布过该文章
+        let isUpdate = !!frontmatter.haloPostId;
+        if (isUpdate) {
+          this.updateStatusBar('更新中...');
+          notice.setMessage('正在更新 Halo 博客文章...');
+        }
       
         // 准备文章数据 - 符合 Halo API 规范
-      const postData: HaloPost = {
-        apiVersion: 'content.halo.run/v1alpha1',
-        kind: 'Post',
-        metadata: {
-          generateName: 'post-',
-          annotations: {
-            'content.halo.run/preferred-editor': 'bytemd'
-          }
-        },
-        spec: {
-          title: frontmatter.title || file.basename,
-          slug: frontmatter.slug || this.generateSlug(file.basename),
-          template: '',
-          cover: frontmatter.banner || '',
-          deleted: false,
-          publish: this.settings.haloAutoPublish,
-          publishTime: frontmatter.publishTime || new Date().toISOString(),
-          pinned: frontmatter.pinned || false,
-          allowComment: frontmatter.allowComment !== false,
-          visible: this.normalizeVisibility(frontmatter.visible),
-          priority: frontmatter.priority || 0,
-          excerpt: {
-            autoGenerate: true,
-            raw: frontmatter.excerpt || ''
+        const postData: HaloPost = {
+          apiVersion: 'content.halo.run/v1alpha1',
+          kind: 'Post',
+          metadata: {
+            generateName: 'post-',
+            annotations: {
+              'content.halo.run/preferred-editor': 'bytemd'
+            }
           },
-          categories: this.getCategories(frontmatter),
-          tags: this.getTags(frontmatter)
-        }
-      };
+          spec: {
+            title: frontmatter.title || file.basename,
+            slug: frontmatter.slug || this.generateSlug(file.basename),
+            template: '',
+            cover: frontmatter.banner || frontmatter.cover || '',
+            deleted: false,
+            publish: this.settings.haloAutoPublish || frontmatter.publish === false,
+            publishTime: frontmatter.publishTime || new Date().toISOString(),
+            pinned: frontmatter.pinned || false,
+            allowComment: frontmatter.allowComment !== false,
+            visible: this.normalizeVisibility(frontmatter.visible),
+            priority: frontmatter.priority || 0,
+            excerpt: {
+              autoGenerate: true,
+              raw: frontmatter.excerpt || ''
+            },
+            categories: this.getCategories(frontmatter),
+            tags: this.getTags(frontmatter)
+          }
+        };
 
-      // 发送到Halo
-      const response = await this.sendToHalo(postData);
-      
-      if (response.success && response.data?.metadata?.name) {
-        // 创建文章内容
+        // 准备内容数据 - 将Markdown转换为HTML
+        const htmlContent = await marked(markdownContent);
         const contentData: HaloContent = {
           raw: markdownContent,
-          content: markdownContent,
+          content: htmlContent,
           rawType: 'markdown'
         };
+
+        // 准备发布或更新
         
-        const contentResponse = await this.sendContentToHalo(response.data.metadata.name, contentData);
-        if (!contentResponse.success) {
-          this.logger.error('内容上传失败:', contentResponse.error);
-          throw new Error(`内容上传失败: ${contentResponse.error}`);
-        }
+        // 从frontmatter中获取之前发布的文章ID
+        const previousPostId = frontmatter.haloPostId;
         
-        // 如果设置了自动发布且当前是草稿状态，则发布文章
-        if (this.settings.haloAutoPublish && !postData.spec.publish) {
-          const publishResponse = await this.consoleApiClient.content.post.publishPost({
-            name: response.data.metadata.name
-          });
-          if (!publishResponse?.data) {
-            this.logger.warn('文章发布失败，但内容已保存');
+        if (previousPostId) {
+          this.logger.info(`检测到文章已发布过，ID: ${previousPostId}，准备更新`);
+          
+          // 先删除旧文章
+          const recycleResponse = await this.recycleHaloPost(previousPostId);
+          if (!recycleResponse.success) {
+            this.logger.warn(`删除旧文章失败: ${recycleResponse.error}，将尝试直接创建新文章`);
+            // 如果删除失败，将其视为新发布而非更新
+            isUpdate = false;
           } else {
-            this.logger.info(`文章发布成功: ${publishResponse.data.metadata?.name}`);
-            // 更新response为发布后的数据
-            response.data = publishResponse.data;
+            this.logger.info(`旧文章删除成功，准备重新发布`);
+            // 等待一小段时间确保删除操作完成
+            await this.sleep(1000);
           }
         }
-      }
-      
-      if (response.success) {
+        
+        // 创建新文章
+        const response = await this.createHaloPostWithContent(postData, contentData);
+        
+        if (!response.success || !response.data?.metadata?.name) {
+          throw new Error(`${isUpdate ? '更新' : '发布'}文章失败: ${response.error}`);
+        }
+
+        const postName = response.data.metadata.name;
+        this.logger.info(`文章${isUpdate ? '更新' : '发布'}成功: ${postName}`);
+        
         // 更新发布缓存
         this.updatePublishCache(file, content);
         
         // 记录发布历史
         this.addToPublishHistory({
           fileName: file.name,
-          postName: response.data?.metadata?.name || '',
+          postName: postName,
           publishTime: new Date().toISOString(),
-          success: true
+          success: true,
+          isUpdate: isUpdate
         });
         
-        // 更新frontmatter，记录发布信息
-        await this.app.fileManager.processFrontMatter(file, (fm) => {
-          fm.haloPublished = true;
-          fm.haloPublishTime = new Date().toISOString();
-          if (response.data?.metadata?.name) {
-            fm.haloPostId = response.data.metadata.name;
-            fm.haloPostUrl = `${this.settings.haloUrl}/archives/${response.data.spec?.slug || response.data.metadata.name}`;
-          }
-        });
+        // 如果启用了归档功能，将文章复制到归档文件夹
+        if (this.settings.enableArchive) {
+          await this.archivePublishedPost(file, postName, isUpdate);
+        }
         
         notice.hide();
-        this.updateStatusBar('发布成功');
-        new Notice('文章已成功发布到 Halo 博客！');
-        this.logger.info(`文章发布成功: ${response.data?.metadata?.name}`);
+        this.updateStatusBar(isUpdate ? '更新成功' : '发布成功');
+        new Notice(isUpdate ? '文章已成功更新到 Halo 博客！' : '文章已成功发布到 Halo 博客！');
+        this.logger.info(`文章${isUpdate ? '更新' : '发布'}完成: ${postName}`);
         
         // 3秒后清除状态
         setTimeout(() => this.updateStatusBar(''), 3000);
-      } else {
-        throw new Error(response.error || '发布失败');
-      }
-    } catch (error) {
+        
+      } catch (error) {
         this.logger.error('发布到Halo失败:', error);
         if (notice) {
           notice.hide();
@@ -447,7 +604,8 @@ export default class MyPlugin extends Plugin {
           postName: '',
           publishTime: new Date().toISOString(),
           success: false,
-          error: error.message
+          error: error.message,
+          isUpdate: false // 由于发生错误，无法确定是否为更新操作
         });
         
         // 3秒后清除状态
@@ -521,11 +679,12 @@ export default class MyPlugin extends Plugin {
     return this.settings.haloDefaultTags || [];
   }
 
-  private async sendToHalo(postData: HaloPost): Promise<ApiResponse> {
+  // 创建Halo文章并同时上传内容（推荐方法）
+  private async createHaloPostWithContent(postData: HaloPost, contentData: HaloContent): Promise<HaloApiResponse> {
     const maxRetries = 3;
-    const baseDelay = 1000; // 1秒基础延迟
+    const baseDelay = 1000;
     
-    this.logger.debug(`开始发送文章到Halo: ${postData.spec.title}`);
+    this.logger.debug(`开始创建文章并上传内容: ${postData.spec.title}`);
     
     if (!this.consoleApiClient) {
       this.logger.error('Console API客户端未初始化');
@@ -535,7 +694,55 @@ export default class MyPlugin extends Plugin {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         if (attempt > 1) {
-          this.logger.info(`重试发送文章 (第${attempt}次尝试)`);
+          this.logger.info(`重试创建文章 (第${attempt}次尝试)`);
+        }
+        
+        // 使用正确的API格式：postRequest包装
+        const requestData = {
+          postRequest: {
+            post: postData,
+            content: contentData
+          }
+        };
+        
+        const response = await this.consoleApiClient.content.post.draftPost(requestData);
+
+        this.logger.info(`文章创建并上传内容成功: ${response?.data?.metadata?.name}`);
+        
+        return { success: true, data: response?.data };
+      } catch (error) {
+        this.logger.error(`文章创建异常 (尝试 ${attempt}/${maxRetries}):`, error);
+        
+        if (attempt < maxRetries && (this.isRetryableError(error) || this.isNetworkError(error))) {
+          const delay = baseDelay * Math.pow(2, attempt - 1);
+          this.logger.debug(`等待 ${delay}ms 后重试创建`);
+          await this.sleep(delay);
+          continue;
+        }
+        
+        return { success: false, error: error.message };
+      }
+    }
+    
+    return { success: false, error: '达到最大重试次数' };
+  }
+
+  // 创建Halo文章（仅创建，不上传内容）
+  private async createHaloPost(postData: HaloPost): Promise<HaloApiResponse> {
+    const maxRetries = 3;
+    const baseDelay = 1000; // 1秒基础延迟
+    
+    this.logger.debug(`开始创建文章到Halo: ${postData.spec.title}`);
+    
+    if (!this.consoleApiClient) {
+      this.logger.error('Console API客户端未初始化');
+      return { success: false, error: 'API客户端未初始化' };
+    }
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        if (attempt > 1) {
+          this.logger.info(`重试创建文章 (第${attempt}次尝试)`);
         }
         
         // 创建草稿文章（不立即发布）
@@ -569,7 +776,105 @@ export default class MyPlugin extends Plugin {
     return { success: false, error: '达到最大重试次数' };
   }
 
-  private async sendContentToHalo(postName: string, contentData: HaloContent): Promise<ApiResponse> {
+  // 发布Halo文章
+  private async publishHaloPost(postName: string): Promise<HaloApiResponse> {
+    const maxRetries = 3;
+    const baseDelay = 1000;
+    
+    this.logger.debug(`开始发布文章: ${postName}`);
+    
+    if (!this.consoleApiClient) {
+      this.logger.error('Console API客户端未初始化');
+      return { success: false, error: 'API客户端未初始化' };
+    }
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        if (attempt > 1) {
+          this.logger.info(`重试发布文章 (第${attempt}次尝试)`);
+        }
+        
+        const publishData = await this.consoleApiClient.content.post.publishPost({
+          name: postName
+        });
+
+        this.logger.info(`文章发布成功: ${postName}`);
+        
+        return { success: true, data: publishData?.data };
+      } catch (error) {
+        this.logger.error(`文章发布异常 (尝试 ${attempt}/${maxRetries}):`, error);
+        
+        if (attempt < maxRetries && this.isNetworkError(error)) {
+          const delay = baseDelay * Math.pow(2, attempt - 1);
+          this.logger.debug(`等待 ${delay}ms 后重试发布`);
+          await this.sleep(delay);
+          continue;
+        }
+        
+        return { success: false, error: error.message };
+      }
+    }
+    
+    return { success: false, error: '达到最大重试次数' };
+  }
+
+  // 删除Halo文章（将文章移至回收站）
+  private async recycleHaloPost(postName: string): Promise<HaloApiResponse> {
+    const maxRetries = 3;
+    const baseDelay = 1000;
+    
+    this.logger.debug(`开始删除文章: ${postName}`);
+    
+    if (!this.consoleApiClient) {
+      this.logger.error('Console API客户端未初始化');
+      return { success: false, error: 'API客户端未初始化' };
+    }
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        if (attempt > 1) {
+          this.logger.info(`重试删除文章 (第${attempt}次尝试)`);
+        }
+        
+        // 调用回收API
+        // 使用axios实例直接发送请求
+        const url = `/apis/api.console.halo.run/v1alpha1/posts/${postName}/recycle`;
+        const axiosInstance = axios.create({
+          baseURL: this.settings.haloUrl.replace(/\/$/, ''),
+          headers: {
+            'Authorization': `Bearer ${this.settings.haloToken}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000
+        });
+        const response = await axiosInstance.put(url);
+
+        this.logger.info(`文章删除成功: ${postName}`);
+        
+        return { success: true, data: response?.data };
+      } catch (error) {
+        this.logger.error(`文章删除异常 (尝试 ${attempt}/${maxRetries}):`, error);
+        
+        if (attempt < maxRetries && (this.isRetryableError(error) || this.isNetworkError(error))) {
+          const delay = baseDelay * Math.pow(2, attempt - 1);
+          this.logger.debug(`等待 ${delay}ms 后重试删除`);
+          await this.sleep(delay);
+          continue;
+        }
+        
+        return { success: false, error: error.message };
+      }
+    }
+    
+    return { success: false, error: '达到最大重试次数' };
+  }
+
+  // 发送到Halo（保留原方法以兼容）
+  private async sendToHalo(postData: HaloPost): Promise<HaloApiResponse> {
+    return this.createHaloPost(postData);
+  }
+
+  private async sendContentToHalo(postName: string, contentData: HaloContent): Promise<HaloApiResponse> {
     const maxRetries = 3;
     const baseDelay = 1000;
     
@@ -630,6 +935,177 @@ export default class MyPlugin extends Plugin {
   // 辅助方法：延迟执行
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * 将发布的文章归档到指定文件夹
+   * @param file 原始文件
+   * @param postId 发布的文章ID
+   * @param isUpdate 是否为更新操作
+   */
+  private async archivePublishedPost(file: TFile, postId: string, isUpdate: boolean): Promise<void> {
+    try {
+      // 确保归档文件夹路径格式正确
+      let archiveFolderPath = this.settings.archiveFolderPath.trim();
+      if (!archiveFolderPath) {
+        this.logger.warn('归档文件夹路径为空，跳过归档');
+        return;
+      }
+      
+      // 规范化路径格式
+      archiveFolderPath = archiveFolderPath.replace(/\\/g, '/'); // 将反斜杠替换为正斜杠
+      archiveFolderPath = archiveFolderPath.replace(/\/+/g, '/'); // 移除多余的斜杠
+      archiveFolderPath = archiveFolderPath.replace(/^\/+|\/+$/g, ''); // 移除开头和结尾的斜杠
+      
+      this.logger.info(`规范化后的归档文件夹路径: ${archiveFolderPath}`);
+
+      // 递归创建所有必要的文件夹
+      const folders = archiveFolderPath.split('/');
+      let currentPath = '';
+      
+      for (const folder of folders) {
+        if (!folder) continue;
+        currentPath += folder + '/';
+        const folderExists = this.app.vault.getAbstractFileByPath(currentPath);
+        
+        if (!folderExists) {
+          try {
+            await this.app.vault.createFolder(currentPath);
+            this.logger.info(`创建文件夹: ${currentPath}`);
+            await this.sleep(500); // 等待文件系统同步
+          } catch (error) {
+            // 如果文件夹已存在，继续执行
+            if (!(error instanceof Error) || !error.message.includes('already exists')) {
+              this.logger.error(`创建文件夹失败: ${error.message}`);
+              new Notice(`创建文件夹失败: ${error.message}`);
+              return;
+            }
+          }
+        } else if (!(folderExists instanceof TFolder)) {
+          this.logger.error(`路径 ${currentPath} 已被其他类型文件占用`);
+          new Notice(`路径 ${currentPath} 已被其他类型文件占用`);
+          return;
+        }
+      }
+
+      // 读取原始文件内容
+      const content = await this.app.vault.read(file);
+      
+      // 查找已存在的归档文件
+      const files = this.app.vault.getFiles();
+      const existingArchiveFile = files.find(f => 
+        f.path.startsWith(archiveFolderPath) && 
+        f.basename.startsWith(file.basename) && 
+        f.basename.includes(isUpdate ? 'update' : 'publish')
+      );
+
+      // 构建归档文件路径
+      let archiveFilePath;
+      if (existingArchiveFile) {
+        archiveFilePath = existingArchiveFile.path;
+      } else {
+        // 确保文件名格式正确
+        const archiveFileName = `${file.basename}-${isUpdate ? 'update' : 'publish'}.md`;
+        archiveFilePath = `${archiveFolderPath}/${archiveFileName}`;
+        // 规范化路径格式
+        archiveFilePath = archiveFilePath.replace(/\\/g, '/').replace(/\/+/g, '/');
+      }
+      
+      this.logger.info(`目标归档文件路径: ${archiveFilePath}`);
+      // 如果找到已存在的归档文件，则更新它
+      if (archiveFilePath) {
+        this.logger.info(`更新已存在的归档文件: ${archiveFilePath}`);
+      }
+      
+      // 解析原始文件的frontmatter
+      const { frontmatter, content: bodyContent } = this.parseFrontmatter(content);
+      
+      // 添加归档相关的属性
+      frontmatter.haloPostId = postId;
+      frontmatter.haloPublishTime = new Date().toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).replace(/[/]/g, '-');
+      
+      // 将frontmatter转换为YAML格式
+      let yamlFrontmatter = '---\n';
+      for (const key in frontmatter) {
+        if (frontmatter[key] instanceof Array) {
+          yamlFrontmatter += `${key}:\n`;
+          frontmatter[key].forEach((item: any) => {
+            yamlFrontmatter += `  - ${item}\n`;
+          });
+        } else if (frontmatter[key] instanceof Object) {
+          // 跳过复杂对象
+          continue;
+        } else {
+          yamlFrontmatter += `${key}: ${frontmatter[key]}\n`;
+        }
+      }
+      yamlFrontmatter += '---\n';
+      
+      // 创建归档文件内容
+      const archiveContent = `${yamlFrontmatter}${bodyContent}`;
+      
+      // 创建或更新归档文件
+      try {
+        // 如果存在旧的归档文件，尝试删除
+        this.logger.info(`尝试删除旧的归档文件: ${archiveFilePath}`);
+        const targetFile = this.app.vault.getAbstractFileByPath(archiveFilePath);
+        if (targetFile) {
+          const maxDeleteRetries = 3;
+          for (let deleteAttempt = 1; deleteAttempt <= maxDeleteRetries; deleteAttempt++) {
+            try {
+              await this.sleep(1000 * deleteAttempt); // 每次重试增加等待时间
+              await this.app.vault.delete(targetFile);
+              
+              // 等待并检查文件是否真的被删除
+              await this.sleep(1000);
+              const fileStillExists = this.app.vault.getAbstractFileByPath(targetFile.path);
+              if (!fileStillExists) {
+                this.logger.info(`已删除旧的归档文件: ${targetFile.path}`);
+                break;
+              }
+              
+              if (deleteAttempt === maxDeleteRetries) {
+                throw new Error('无法删除旧的归档文件，文件可能被锁定');
+              }
+              this.logger.warn(`删除文件失败，准备第${deleteAttempt + 1}次尝试`);
+            } catch (deleteError) {
+              if (deleteAttempt === maxDeleteRetries) {
+                throw new Error(`删除旧的归档文件失败: ${deleteError.message}`);
+              }
+            }
+          }
+        }
+
+        // 再次检查并等待确保文件系统完全同步
+        await this.sleep(2000);
+        const fileExists = this.app.vault.getAbstractFileByPath(archiveFilePath);
+        if (fileExists) {
+          throw new Error('文件系统同步异常，目标文件仍然存在');
+        }
+
+        // 确保归档文件的父文件夹存在
+        const archiveFileDir = archiveFilePath.substring(0, archiveFilePath.lastIndexOf('/'));
+        const parentFolder = this.app.vault.getAbstractFileByPath(archiveFileDir);
+        
+        if (!parentFolder) {
+          this.logger.info(`创建归档文件的父文件夹: ${archiveFileDir}`);
+          await this.app.vault.createFolder(archiveFileDir);
+          await this.sleep(1000); // 等待文件夹创建完成
+        }
+        
+        // 创建新的归档文件
+        await this.app.vault.create(archiveFilePath, archiveContent);
+        this.logger.info(`文章已归档: ${archiveFilePath}`);
+        new Notice(`文章已归档: ${file.basename}-${isUpdate ? 'update' : 'publish'}.md`);
+      } catch (error) {
+        const errorMessage = `创建归档文件失败: ${error.message}`;
+        this.logger.error(errorMessage);
+        throw new Error(errorMessage);
+      }
+    } catch (error) {
+      this.logger.error(`归档文章失败: ${error.message}`);
+      new Notice(`归档文章失败: ${error.message}`);
+    }
   }
 
   // 验证 Halo 配置
@@ -714,9 +1190,16 @@ export default class MyPlugin extends Plugin {
   }
 
   // 获取发布历史
-   getPublishHistory(): PublishHistory[] {
-     return this.settings.publishHistory || [];
-   }
+  getPublishHistory(): PublishHistory[] {
+    return this.settings.publishHistory || [];
+  }
+
+  // 清除发布历史
+  clearPublishHistory(): void {
+    this.settings.publishHistory = [];
+    this.saveSettings();
+    this.logger.info('发布历史记录已清除');
+  }
 
    // 初始化API客户端
    private initializeApiClients(): void {
@@ -901,6 +1384,10 @@ export class HaloConfigModal extends Modal {
     haloDefaultCategory: string;
     haloDefaultTags: string;
     haloAutoPublish: boolean;
+    upyunBucket: string;
+    upyunOperator: string;
+    upyunPassword: string;
+    upyunDomain: string;
   };
 
   constructor(app: App, plugin: MyPlugin) {
@@ -911,7 +1398,11 @@ export class HaloConfigModal extends Modal {
       haloToken: plugin.settings.haloToken,
       haloDefaultCategory: plugin.settings.haloDefaultCategory,
       haloDefaultTags: plugin.settings.haloDefaultTags.join(', '),
-      haloAutoPublish: plugin.settings.haloAutoPublish
+      haloAutoPublish: plugin.settings.haloAutoPublish,
+      upyunBucket: plugin.settings.upyunBucket,
+      upyunOperator: plugin.settings.upyunOperator,
+      upyunPassword: plugin.settings.upyunPassword,
+      upyunDomain: plugin.settings.upyunDomain
     };
   }
 
@@ -979,6 +1470,57 @@ export class HaloConfigModal extends Modal {
           this.tempSettings.haloAutoPublish = value;
         }));
 
+    // 又拍云配置分隔线
+    contentEl.createEl('h2', { text: '又拍云配置' });
+    contentEl.createEl('p', { 
+      text: '配置又拍云存储信息，用于上传文章中的图片。如果不需要，可以留空。',
+      cls: 'setting-item-description'
+    });
+
+    // 又拍云存储空间
+    new Setting(contentEl)
+      .setName('存储空间名称')
+      .setDesc('又拍云存储空间的名称')
+      .addText(text => text
+        .setPlaceholder('your-bucket')
+        .setValue(this.tempSettings.upyunBucket)
+        .onChange(async (value) => {
+          this.tempSettings.upyunBucket = value.trim();
+        }));
+
+    // 操作员名称
+    new Setting(contentEl)
+      .setName('操作员名称')
+      .setDesc('有权限操作该存储空间的操作员名称')
+      .addText(text => text
+        .setPlaceholder('operator')
+        .setValue(this.tempSettings.upyunOperator)
+        .onChange(async (value) => {
+          this.tempSettings.upyunOperator = value.trim();
+        }));
+
+    // 操作员密码
+    new Setting(contentEl)
+      .setName('操作员密码')
+      .setDesc('操作员的密码')
+      .addText(text => text
+        .setPlaceholder('password')
+        .setValue(this.tempSettings.upyunPassword)
+        .onChange(async (value) => {
+          this.tempSettings.upyunPassword = value.trim();
+        }));
+
+    // 加速域名
+    new Setting(contentEl)
+      .setName('加速域名')
+      .setDesc('存储空间绑定的域名，以 http:// 或 https:// 开头')
+      .addText(text => text
+        .setPlaceholder('https://your-domain.com')
+        .setValue(this.tempSettings.upyunDomain)
+        .onChange(async (value) => {
+          this.tempSettings.upyunDomain = value.trim();
+        }));
+
     // 按钮区域
     const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
     buttonContainer.style.display = 'flex';
@@ -987,9 +1529,15 @@ export class HaloConfigModal extends Modal {
     buttonContainer.style.marginTop = '20px';
 
     // 测试连接按钮
-    const testButton = buttonContainer.createEl('button', { text: '测试连接' });
+    const testButton = buttonContainer.createEl('button', { text: '测试 Halo 连接' });
     testButton.onclick = async () => {
       await this.testConnection();
+    };
+
+    // 测试又拍云按钮
+    const testUpyunButton = buttonContainer.createEl('button', { text: '测试又拍云' });
+    testUpyunButton.onclick = async () => {
+      await this.testUpyunConnection();
     };
 
     // 取消按钮
@@ -1003,6 +1551,65 @@ export class HaloConfigModal extends Modal {
     saveButton.onclick = async () => {
       await this.saveSettings();
     };
+  }
+
+  async testUpyunConnection() {
+    if (!this.tempSettings.upyunBucket || !this.tempSettings.upyunOperator || 
+        !this.tempSettings.upyunPassword || !this.tempSettings.upyunDomain) {
+      new Notice('请先填写完整的又拍云配置');
+      return;
+    }
+
+    try {
+      // 创建一个1x1的透明像素作为测试图片
+      const testImageBuffer = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+      
+      // 生成测试文件名
+      const testFileName = `test-${Date.now()}.gif`;
+      const uploadPath = `/obsidian-images/${testFileName}`;
+      
+      // 计算签名
+      const gmtDate = new Date().toUTCString();
+      const method = 'PUT';
+      const contentMd5 = crypto.createHash('md5').update(testImageBuffer).digest('hex');
+      const contentType = 'image/gif';
+      
+      // 构建签名字符串
+      const signStr = [method, uploadPath, gmtDate, contentMd5, contentType].join('&');
+      const signature = crypto
+        .createHmac('sha1', this.tempSettings.upyunPassword)
+        .update(signStr)
+        .digest('base64');
+      
+      // 发送测试请求
+      const response = await fetch(`http://v0.api.upyun.com/${this.tempSettings.upyunBucket}${uploadPath}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `UPYUN ${this.tempSettings.upyunOperator}:${signature}`,
+          'Date': gmtDate,
+          'Content-Type': contentType,
+          'Content-MD5': contentMd5,
+          'Content-Length': testImageBuffer.length.toString(),
+        },
+        body: testImageBuffer,
+      });
+
+      if (response.ok) {
+        // 上传成功后尝试访问图片
+        const imageUrl = `${this.tempSettings.upyunDomain}${uploadPath}`;
+        const checkResponse = await fetch(imageUrl);
+        if (checkResponse.ok) {
+          new Notice('又拍云配置测试成功！');
+        } else {
+          throw new Error('图片访问失败，请检查加速域名配置');
+        }
+      } else {
+        throw new Error(`上传失败: ${response.statusText}`);
+      }
+    } catch (error) {
+      console.error('又拍云测试失败:', error);
+      new Notice(`又拍云测试失败: ${error.message}`);
+    }
   }
 
   async testConnection() {
@@ -1033,13 +1640,13 @@ export class HaloConfigModal extends Modal {
   }
 
   async saveSettings() {
-    // 验证必填字段
+    // 验证 Halo 必填字段
     if (!this.tempSettings.haloUrl || !this.tempSettings.haloToken) {
       new Notice('请填写 Halo 地址和访问令牌');
       return;
     }
 
-    // 保存设置
+    // 保存 Halo 设置
     this.plugin.settings.haloUrl = this.tempSettings.haloUrl;
     this.plugin.settings.haloToken = this.tempSettings.haloToken;
     this.plugin.settings.haloDefaultCategory = this.tempSettings.haloDefaultCategory;
@@ -1049,8 +1656,20 @@ export class HaloConfigModal extends Modal {
       .filter(tag => tag.length > 0);
     this.plugin.settings.haloAutoPublish = this.tempSettings.haloAutoPublish;
 
+    // 保存又拍云设置
+    this.plugin.settings.upyunBucket = this.tempSettings.upyunBucket;
+    this.plugin.settings.upyunOperator = this.tempSettings.upyunOperator;
+    this.plugin.settings.upyunPassword = this.tempSettings.upyunPassword;
+    this.plugin.settings.upyunDomain = this.tempSettings.upyunDomain;
+
+    // 验证又拍云配置的完整性
+    const hasUpyunConfig = !!(this.tempSettings.upyunBucket && 
+      this.tempSettings.upyunOperator && 
+      this.tempSettings.upyunPassword && 
+      this.tempSettings.upyunDomain);
+
     await this.plugin.saveSettings();
-    new Notice('Halo 配置已保存');
+    new Notice(`配置已保存${hasUpyunConfig ? '，又拍云图床已启用' : ''}`); 
     this.close();
   }
 
