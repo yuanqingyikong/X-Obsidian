@@ -229,6 +229,58 @@
     </div>
   </div>
   
+  <h2>高级设置</h2>
+  
+  <!-- 调试模式 -->
+  <div class="setting-item">
+    <div class="setting-item-info">
+      <div class="setting-item-name">启用调试模式</div>
+      <div class="setting-item-description">
+        启用后将显示更详细的日志信息，有助于排查问题
+      </div>
+    </div>
+    <div class="setting-item-control">
+      <input
+        type="checkbox"
+        v-model="settings.debugMode"
+      />
+    </div>
+  </div>
+  
+  <!-- 日志设置 -->
+  <div class="setting-item">
+    <div class="setting-item-info">
+      <div class="setting-item-name">启用日志</div>
+      <div class="setting-item-description">
+        是否在控制台输出插件日志信息
+      </div>
+    </div>
+    <div class="setting-item-control">
+      <input
+        type="checkbox"
+        v-model="settings.enableLogging"
+      />
+    </div>
+  </div>
+  
+  <!-- 日志级别 -->
+  <div class="setting-item" v-if="settings.enableLogging">
+    <div class="setting-item-info">
+      <div class="setting-item-name">日志级别</div>
+      <div class="setting-item-description">
+        设置日志输出的详细程度
+      </div>
+    </div>
+    <div class="setting-item-control">
+      <select v-model="settings.logLevel">
+        <option value="debug">调试 (Debug)</option>
+        <option value="info">信息 (Info)</option>
+        <option value="warn">警告 (Warn)</option>
+        <option value="error">错误 (Error)</option>
+      </select>
+    </div>
+  </div>
+  
   <!-- 保存按钮 -->
   <div class="setting-item">
     <div class="setting-item-control">

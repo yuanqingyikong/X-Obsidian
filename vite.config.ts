@@ -1,4 +1,3 @@
-// import path from "path";
 import { defineConfig } from "vite";
 import builtins from "builtin-modules";
 import vue from "@vitejs/plugin-vue";

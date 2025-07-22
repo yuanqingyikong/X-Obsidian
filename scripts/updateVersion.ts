@@ -1,4 +1,3 @@
-// import readline from "readline";
 import fsPromise from "fs/promises";
 import { exec } from "child_process";
 import inquirer from "inquirer";

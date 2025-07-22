@@ -1,10 +1,10 @@
 {
-  "id": "X-Tools",
-  "name": "X工具集合",
-  "version": "0.0.1",
+  "id": "X-Obsidian",
+  "name": "X-Obsidian",
+  "version": "0.0.2",
   "minAppVersion": "0.12.0",
-  "description": "A plugin development template for devs who want to use vue in Obsidian.",
-  "author": "Otto",
-  "authorUrl": "https://github.com/otto-j",
+  "description": "X-Obsidian是一个为 Obsidian 用户设计的多功能插件，旨在提供更丰富的笔记管理和展示功能。它集成了博客发布、头图管理、数据可视化和图片上传等多种实用工具，让您的笔记体验更加完善",
+  "author": "yuanqingyikong",
+  "authorUrl": "https://github.com/yuanqingyikong",
   "isDesktopOnly": true
 }

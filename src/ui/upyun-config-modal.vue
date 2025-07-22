@@ -55,12 +55,25 @@
         <!-- 加速域名 -->
         <div class="upyun-form-item">
           <label class="upyun-form-label">加速域名</label>
-          <p class="upyun-form-description">存储空间绑定的域名，用于访问上传的图片</p>
+          <p class="upyun-form-description">存储空间绑定的域名，用于访问上传的图片，必须以 http:// 或 https:// 开头</p>
           <input
             type="text"
             class="upyun-form-input"
             v-model="tempSettings.upyunDomain"
             placeholder="https://your-domain.com"
+            spellcheck="false"
+          />
+        </div>
+
+        <!-- 存储路径 -->
+        <div class="upyun-form-item">
+          <label class="upyun-form-label">存储路径</label>
+          <p class="upyun-form-description">图片在存储空间中的存储路径，不需要以斜杠开头或结尾</p>
+          <input
+            type="text"
+            class="upyun-form-input"
+            v-model="tempSettings.upyunPath"
+            placeholder="images/obsidian"
             spellcheck="false"
           />
         </div>
@@ -101,7 +114,8 @@ const tempSettings = ref({
   upyunBucket: props.plugin.settings.upyunBucket || '',
   upyunOperator: props.plugin.settings.upyunOperator || '',
   upyunPassword: props.plugin.settings.upyunPassword || '',
-  upyunDomain: props.plugin.settings.upyunDomain || ''
+  upyunDomain: props.plugin.settings.upyunDomain || '',
+  upyunPath: props.plugin.settings.upyunPath || ''
 });
 
 const saveSettings = async () => {
@@ -118,13 +132,18 @@ const saveSettings = async () => {
     return;
   }
 
+  // 处理存储路径，确保没有前后斜杠
+  let path = tempSettings.value.upyunPath || '';
+  path = path.replace(/^\/|\/$|^\\|\\$/g, '');
+
   // 通过回调函数更新设置
   const newSettings = {
     ...props.plugin.settings,
     upyunBucket: tempSettings.value.upyunBucket,
     upyunOperator: tempSettings.value.upyunOperator,
     upyunPassword: tempSettings.value.upyunPassword,
-    upyunDomain: tempSettings.value.upyunDomain
+    upyunDomain: tempSettings.value.upyunDomain,
+    upyunPath: path
   };
   props.onSettingsUpdate(newSettings);
 
@@ -146,13 +165,18 @@ const testConnection = async () => {
     return;
   }
 
+  // 处理存储路径，确保没有前后斜杠
+  let path = tempSettings.value.upyunPath || '';
+  path = path.replace(/^\/|\/$|^\\|\\$/g, '');
+
   // 临时应用新设置用于测试
   const testSettings = {
     ...props.plugin.settings,
     upyunBucket: tempSettings.value.upyunBucket,
     upyunOperator: tempSettings.value.upyunOperator,
     upyunPassword: tempSettings.value.upyunPassword,
-    upyunDomain: tempSettings.value.upyunDomain
+    upyunDomain: tempSettings.value.upyunDomain,
+    upyunPath: path
   };
 
   try {
