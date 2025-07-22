@@ -1,4 +1,4 @@
-# X工具集合 (X-Tools)
+# X-Obsidian
 
 [![standard-readme compliant](https://img.shields.io/badge/readme%20style-standard-brightgreen.svg?style=flat-square)](https://github.com/RichardLitt/standard-readme)
 
@@ -21,12 +21,12 @@
 
 ## 背景
 
-X工具集合是一个为 Obsidian 用户设计的多功能插件，旨在提供更丰富的笔记管理和展示功能。它集成了博客发布、头图管理、数据可视化和图片上传等多种实用工具，让您的笔记体验更加完善。
+X-Obsidian是一个为 Obsidian 用户设计的多功能插件，旨在提供更丰富的笔记管理和展示功能。它集成了博客发布、头图管理、数据可视化和图片上传等多种实用工具，让您的笔记体验更加完善。
 
 ## 安装
 
 1. 下载插件文件到 Obsidian 插件目录
-2. 在 Obsidian 设置中启用「X工具集合」插件
+2. 在 Obsidian 设置中启用「X-Obsidian」插件
 3. 重启 Obsidian
 
 ## 使用方法
