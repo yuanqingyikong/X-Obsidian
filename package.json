@@ -10,7 +10,11 @@
     "build": "vite build",
     "build-with-check": "npm run type-check && vite build",
     "format": "prettier --write src/",
-    "updateVersion": "tsx scripts/updateVersion.ts"
+    "updateVersion": "tsx scripts/updateVersion.ts",
+    "release": "standard-version"
+  },
+  "standard-version": {
+    "t": ""
   },
   "keywords": [],
   "author": "Otto",
@@ -39,6 +43,7 @@
     "inquirer": "^9.2.17",
     "obsidian": "latest",
     "prettier": "^2.8.8",
+    "standard-version": "^9.5.0",
     "tslib": "2.4.0",
     "typescript": "5.1.6",
     "vite": "^5.2.8",
